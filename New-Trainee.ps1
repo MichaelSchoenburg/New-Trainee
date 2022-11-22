@@ -90,8 +90,6 @@ function Write-ConsoleLog {
     $VerbosePreference = $VerbosePreferenceBefore
 }
 
-
-
 #endregion FUNCTIONS
 #region EXECUTION
 <# 
@@ -109,33 +107,11 @@ if (-not $Surname) {
     $Surname = Read-Host -Prompt 'Surname of the trainee'
 }
 
-# Testdata
-# $Givenname = 'Matthias'
-# $Surname = 'Malmedie'
-
 <# 
-    Set Initials
+    Read Data from INI file
 #>
 
-# Get all initials that need to be considered (only active users)
-$UsersActive = Get-ADUser -Filter 'enabled -eq $true' -Properties Initials
-$UsersPersonnel = $UsersActive.Where( { ( $_.Givenname -ne $null ) -and ( $_.Surname -ne $null ) } )
-$UsersPersonnelNoInitials = $UsersPersonnel.Where( { $_.Initials -eq $null } )
-$UsersPersonnelWithInitials = $UsersPersonnel.Where( { $_.Initials -ne $null } )
-$InitialsAll = $UsersPersonnel.Initials
-
-# Add letters from the surname to the initials such as that the initials become unique
-$Initials = "$( $u.Givenname[0] )$( $u.Surname[0] )"
-$i = 1
-
-while ( $InitialsAll -contains $Initials ) {
-    $i++
-    $Initials = "$( $Givenname[0] )$( $Surname.Substring( 0, $i ) )"
-}
-
-<# 
-    Create new user
-#>
+log 'Loading .\UserParameter.ini...'
 
 # Get sensitive info from INI file
 $RawString = Get-Content ".\UserParameters.ini" | Out-String
@@ -147,9 +123,44 @@ $StringToConvert = $RawString -replace '\\', '\\'
 # And now conversion works.
 $ini = ConvertFrom-StringData $StringToConvert
 
-$Accountpassword = ConvertTo-SecureString -String $ApiToken -AsPlainText $ini.Accountpassword -Force
+$Accountpassword = ConvertTo-SecureString -String $ini.Accountpassword -AsPlainText -Force
 $HomeDirectory = $ini.HomeDirectory
 $ScriptPath = $ini.ScriptPath
+$User = $ini.User
+$Password = ConvertTo-SecureString -String $ini.Password -AsPlainText -Force
+
+<# 
+    Connect to Domain Controller
+#>
+
+$cred = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $User, $Password
+$ComputerName = 'CV-SV-DCS-01'
+
+<# 
+    Set Initials
+#>
+
+log 'Reading AD users from domain controller to build unique initials...'
+
+# Get all initials that need to be considered (only active users)
+$UsersActive = Invoke-Command -ComputerName $ComputerName -Credential $cred -ScriptBlock { Get-ADUser -Filter 'enabled -eq $true' -Properties Initials }
+$UsersPersonnel = $UsersActive.Where( { ( $_.Givenname -ne $null ) -and ( $_.Surname -ne $null ) } )
+$UsersPersonnelNoInitials = $UsersPersonnel.Where( { $_.Initials -eq $null } )
+$UsersPersonnelWithInitials = $UsersPersonnel.Where( { $_.Initials -ne $null } )
+$InitialsAll = $UsersPersonnel.Initials
+
+# Add letters from the surname to the initials such as that the initials become unique
+$Initials = "$( $Givenname[0] )$( $Surname[0] )"
+$i = 1
+
+while ( $InitialsAll -contains $Initials ) {
+    $i++
+    $Initials = "$( $Givenname[0] )$( $Surname.Substring( 0, $i ) )"
+}
+
+<# 
+    Create new user
+#>
 
 # Splatting all arguments for better readability
 $Splat = @{
@@ -171,22 +182,37 @@ $Splat = @{
     Title = "Praktikant"
     AccountExpirationDate = ( Get-Date ).AddDays(14)
 }
-$NewUser = New-ADUser @Splat -PassThru
+
+log 'Creating new AD user on domain controller...'
+
+Invoke-Command -ComputerName $ComputerName -Credential $cred -ArgumentList $Splat -ScriptBlock {
+    $SplatRemote = $Using:Splat
+
+    New-ADUser @SplatRemote
+}
 
 <# 
     Sync to Azure
 #>
 
-Import-Module "C:\Program Files\Microsoft Azure AD Sync\Bin\ADSync\ADSync.psd1"
-Start-ADSyncSyncCycle -PolicyType Delta
+log 'Starting AD sync on domain controller...'
+
+Invoke-Command -ComputerName $ComputerName -Credential $cred -ScriptBlock {
+    Import-Module "C:\Program Files\Microsoft Azure AD Sync\Bin\ADSync\ADSync.psd1"
+    Start-ADSyncSyncCycle -PolicyType Delta
+}
 
 <# 
     Licensing in Azure
 #>
 
-Connect-AzureAD -TenantId "4b4a1eed-012a-4f33-b583-d62bac354bef" -ApplicationId "b5fd2bea-5822-4da8-852e-6a32abe0ae5b" -CertificateThumbprint "3D81C7F406DFC9423B330AD98CD1BBE0B1685429"
+# Connect-AzureAD -TenantId "4b4a1eed-012a-4f33-b583-d62bac354bef" -ApplicationId "b5fd2bea-5822-4da8-852e-6a32abe0ae5b" -CertificateThumbprint "3D81C7F406DFC9423B330AD98CD1BBE0B1685429"
+
+# Onboarding App:
+Connect-AzureAD -TenantId "4b4a1eed-012a-4f33-b583-d62bac354bef" -ApplicationId 'd1186226-581c-44e6-a96b-78d7b90cc8cf' -CertificateThumbprint "3D81C7F406DFC9423B330AD98CD1BBE0B1685429"
 
 # Wait for synchronization
+log 'Checking if Azure AD user exists...'
 
 while ($null -eq ($AzureAdUser = Get-AzureAduser -SearchString "$( $Givenname ) $( $Surname )")) {
     Log 'Waiting 60 sec for sync...'
@@ -198,6 +224,8 @@ $lic = @{
     'Office 365 E3'             = '4b4a1eed-012a-4f33-b583-d62bac354bef_05e9a617-0261-4cee-bb44-138d3ef5d965'
     'Microsoft 365 Business'    = '4b4a1eed-012a-4f33-b583-d62bac354bef_cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46'
 }
+
+log 'Assigning license to Azure AD user...'
 
 Set-AzureADUserLicense -ObjectId $AzureAdUser.ObjectId -AssignedLicenses $lic.'Office 365 E3'
 
