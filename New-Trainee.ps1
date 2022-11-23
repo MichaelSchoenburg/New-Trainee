@@ -206,10 +206,10 @@ Invoke-Command -ComputerName $ComputerName -Credential $cred -ScriptBlock {
     Licensing in Azure
 #>
 
-# Connect-AzureAD -TenantId "4b4a1eed-012a-4f33-b583-d62bac354bef" -ApplicationId "b5fd2bea-5822-4da8-852e-6a32abe0ae5b" -CertificateThumbprint "3D81C7F406DFC9423B330AD98CD1BBE0B1685429"
+Connect-AzureAD -TenantId "4b4a1eed-012a-4f33-b583-d62bac354bef" -ApplicationId "b5fd2bea-5822-4da8-852e-6a32abe0ae5b" -CertificateThumbprint "3D81C7F406DFC9423B330AD98CD1BBE0B1685429"
 
 # Onboarding App:
-Connect-AzureAD -TenantId "4b4a1eed-012a-4f33-b583-d62bac354bef" -ApplicationId 'd1186226-581c-44e6-a96b-78d7b90cc8cf' -CertificateThumbprint "3D81C7F406DFC9423B330AD98CD1BBE0B1685429"
+# Connect-AzureAD -TenantId "4b4a1eed-012a-4f33-b583-d62bac354bef" -ApplicationId 'd1186226-581c-44e6-a96b-78d7b90cc8cf' -CertificateThumbprint "3D81C7F406DFC9423B330AD98CD1BBE0B1685429"
 
 # Wait for synchronization
 log 'Checking if Azure AD user exists...'
@@ -219,15 +219,21 @@ while ($null -eq ($AzureAdUser = Get-AzureAduser -SearchString "$( $Givenname ) 
     Start-Sleep -Seconds 60
 }
 
-# SKUs for our subscribed stuff
-$lic = @{
-    'Office 365 E3'             = '4b4a1eed-012a-4f33-b583-d62bac354bef_05e9a617-0261-4cee-bb44-138d3ef5d965'
-    'Microsoft 365 Business'    = '4b4a1eed-012a-4f33-b583-d62bac354bef_cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46'
-}
-
 log 'Assigning license to Azure AD user...'
 
-Set-AzureADUserLicense -ObjectId $AzureAdUser.ObjectId -AssignedLicenses $lic.'Office 365 E3'
+# SKUs for our subscribed licenses
+$LicSku = @{
+    'Office 365 E3'             = '05e9a617-0261-4cee-bb44-138d3ef5d965'
+    'Microsoft 365 Business'    = 'cbdc14ab-d96c-4c30-b9f4-6ada7cdc1d46'
+}
+
+$License = New-Object -TypeName Microsoft.Open.AzureAD.Model.AssignedLicense
+$License.SkuId = $LicSku.'Office 365 E3'
+$Licenses = New-Object -TypeName Microsoft.Open.AzureAD.Model.AssignedLicenses
+$Licenses.AddLicenses = $License
+
+Set-AzureADUser -ObjectId $AzureAdUser.ObjectId -UsageLocation 'DE'
+Set-AzureADUserLicense -ObjectId $AzureAdUser.ObjectId -AssignedLicenses $Licenses
 
 # Ggf. Aufwand abwägen wie Zeitaufwändig dies per Formular und Erfolgsrückmeldung in MS Teams oben drauf wäre
 
